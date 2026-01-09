@@ -4,4 +4,4 @@ Name=龙芯配置工具
 Comment=龙芯配置工具集
 Exec=loongson-minitool
 Type=Application
-Categories=System;
+Categories=Utility
