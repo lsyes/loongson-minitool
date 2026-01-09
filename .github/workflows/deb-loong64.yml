@@ -1,4 +1,4 @@
-name: Build LoongArch Binary and Release
+name: deb-build
 
 on:
   push:
@@ -6,96 +6,127 @@ on:
 
 jobs:
   package:
+    name: Build & Package (LoongArch64)
     runs-on: loong64
     strategy:
+      fail-fast: false
       matrix:
         target:
           - "lcr.loongnix.cn/library/debian:sid-20251209"
     container:
       image: "${{ matrix.target }}"
+    
     steps:
-      - name: 1. 配置环境与安装依赖
+      - name: 1. Install System Dependencies
         shell: bash
         env:
           TARGET_DISTRO: "${{ matrix.target }}"
         run: |
+          if [[ "${TARGET_DISTRO}" == *"deepin"* ]]; then
+            sed -e 's|https://community-packages.deepin.com|https://mirrors.bfsu.edu.cn/deepin|g' -i /etc/apt/sources.list
+          fi
+          
           apt-get update
-          env DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential curl pkg-config
-
-      - name: 2. 检出代码
+          env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential pkgconf nettle-dev libapt-pkg-dev curl xz-utils \
+            clang openssh-client rsync libbz2-dev liblzma-dev libzstd-dev \
+            nodejs locales git
+            
+      - name: 2. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 3. 安装 Rust 工具链
+      - name: 3. Setup Rust Toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          target: loongarch64-unknown-linux-gnu
-          cache: false
+          cache: true 
 
-      - name: 4. 构建 Release 二进制文件
-        run: cargo build --release --target=loongarch64-unknown-linux-gnu
+      - name: 4. Install cargo-deb
+        run: cargo install cargo-deb
 
-      - name: 5. 准备发布产物
+      - name: 5. Build Project & Generate Assets
+        shell: bash
+        run: |
+          export ZSTD_SYS_USE_PKG_CONFIG=1
+          
+          localedef -i zh_CN -f UTF-8 zh_CN.UTF-8
+          localedef -i zh_TW -f UTF-8 zh_TW.UTF-8
+          
+          cargo build --release --no-default-features --features nice-setup
+          
+
+      - name: 6. Create Deb Package & Rename
         shell: bash
         env:
           TARGET_DISTRO: "${{ matrix.target }}"
         run: |
-          VER_SUFFIX="${TARGET_DISTRO/:/}"
-          VER_SUFFIX="${VER_SUFFIX##*/}"
+          cargo deb -Z xz
           
-          case "${TARGET_DISTRO}" in
-              *"debian:sid"*)
-                  DISTRO_NAME="debian-sid"
-                  ;;
-              *"ubuntu:jammy"*)
-                  DISTRO_NAME="ubuntu-22.04"
-                  ;;
-              *)
-                  DISTRO_NAME="${TARGET_DISTRO##*/}"
-                  DISTRO_NAME="${DISTRO_NAME/:/_}"
-                  ;;
-          esac
+          if [[ "${TARGET_DISTRO}" == *"debian"* ]]; then
+             CODENAME='trixie'
+             VER_SUFFIX='debian13'
+          elif [[ "${TARGET_DISTRO}" == *"deepin"* ]]; then
+             CODENAME='beige'
+             VER_SUFFIX='deepin23'
+          else
+             TMP_SUFFIX="${TARGET_DISTRO##*/}"
+             VER_SUFFIX="${TMP_SUFFIX/:/_}"
+             CODENAME="unknown"
+          fi
           
-          BINARY_NAME="loongson-minitool"
-          RELEASE_DIR="release-$DISTRO_NAME"
+          for file in target/debian/*.deb; do
+            mv -v "${file}" "${file/\.deb/-${VER_SUFFIX}.deb}"
+          done
           
-          mkdir -p "$RELEASE_DIR"
-          cp "target/loongarch64-unknown-linux-gnu/release/$BINARY_NAME" "$RELEASE_DIR/"
-          
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          tar -czf "loongson-minitool_${TAG_NAME}_loongarch64_$DISTRO_NAME.tar.gz" -C "$RELEASE_DIR" .
-          
-          echo "ARTIFACT_NAME=loongson-minitool_${TAG_NAME}_loongarch64_$DISTRO_NAME.tar.gz" >> $GITHUB_ENV
-          echo "ARTIFACT_PATH=loongson-minitool_${TAG_NAME}_loongarch64_$DISTRO_NAME.tar.gz" >> $GITHUB_ENV
-          echo "DISTRO_NAME=$DISTRO_NAME" >> $GITHUB_ENV
+          echo "VER_SUFFIX=${VER_SUFFIX}" >> $GITHUB_ENV
+          echo "CODENAME=${CODENAME}" >> $GITHUB_ENV
 
-      - name: 6. 暂存构建产物
+      - name: 7. Upload to Custom Repository (loongnix)
+        if: ${{ secrets.USER != '' && secrets.KEY != '' }}
+        env:
+          KEY: ${{ secrets.KEY }}
+          USER: ${{ secrets.USER }}
+        run: |
+          mkdir -p ~/.ssh/ && chmod 0700 ~/.ssh/
+          echo "$KEY" > ~/.ssh/id_ed25519 && chmod 0600 ~/.ssh/id_ed25519
+          cp .github/workflows/known_hosts ~/.ssh/known_hosts || ssh-keyscan repo.aosc.io >> ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+          
+          rsync --ignore-existing -v -e "ssh -o IdentityFile=$HOME/.ssh/id_ed25519" \
+            target/debian/*-"${VER_SUFFIX}".deb \
+            ${USER}@repo.aosc.io:/mirror/oma/pool/"${CODENAME}"/main/o/
+            
+          ssh -o IdentityFile=~/.ssh/id_ed25519 ${USER}@repo.aosc.io "touch /mirror/.updated"
+
+      - name: 8. Upload Artifacts (For Release)
         uses: actions/upload-artifact@v4
         with:
-          name: binary-pkg-${{ env.DISTRO_NAME }}
-          path: ${{ env.ARTIFACT_PATH }}
-          retention-days: 7
+          name: deb-packages-${{ env.VER_SUFFIX }}
+          path: target/debian/*.deb
+          retention-days: 1
 
   release:
+    name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [package]
-    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: 1. 下载所有暂存的产物
+      - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: ./release-assets
-          merge-multiple: true
+          path: release-assets
+          merge-multiple: true 
 
-      - name: 2. 创建 GitHub Release 并上传文件
+      - name: List Files (Debug)
+        run: ls -R release-assets
+
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          files: release-assets/*.deb
           body: |
-            ## Loongson Minitool ${{ github.ref_name }}
-            专为 LoongArch64 架构构建的原生二进制文件。
-          files: |
-            ./release-assets/**
+            ## Oma ${{ github.ref_name }}
+            
+            LoongArch64 构建产物 (Debian/Loongnix/Deepin)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
