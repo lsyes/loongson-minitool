@@ -1,0 +1,38 @@
+[package]
+name = "loongson-minitool"
+version = "1.0.0"
+edition = "2024"
+authors = ["lsyes"]
+description = "龙芯配置工具"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[package.metadata.deb]
+copyright = "2026"
+maintainer = "lsyes"
+license-file = ["LICENSE", "4"]  
+extended-description = """
+龙芯配置工具是一个图形化的系统配置工具，专门为LoongArch架构设计。
+主要功能包括：
+- 自动配置龙芯额外软件源
+- 移除垃圾的app-compat包
+- 安装必要的liblol兼容层
+"""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/loongson-minitool", "usr/bin/loongson-minitool", "755"],
+    ["assets/loongson-minitool.desktop", "usr/share/applications/", "644"],
+    ["/usr/share/icons/breeze-dark/preferences/22/preferences-system-linux.svg", "usr/share/icons/hicolor/scalable/apps/loongson-minitool.svg", "644"],
+]
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+codegen-units = 1
+
+[dependencies]
+gpui = "0.2.2"  
+gpui-component = "0.5"
+anyhow = "1.0"
