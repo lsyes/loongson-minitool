@@ -1,24 +1,33 @@
-name: Rust
+name: Build for LoongArch64
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ "main" ]
-
-env:
-  CARGO_TERM_COLOR: always
-
+    branches: [ main, master ]
 jobs:
-  build:
-
+  build-loongarch:
+    name: Build LoongArch64 Binary
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-    - name: Pkg
-      run: cargo deb
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: loongarch64-unknown-linux-gnu
+
+      - name: Build for LoongArch64
+        run: |
+          export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="loongarch64-unknown-linux-gnu-gcc"
+          cargo build --release --target=loongarch64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: "-C linker=loongarch64-unknown-linux-gnu-gcc"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: loongson-minitool-loongarch64
+          path: target/loongarch64-unknown-linux-gnu/release/loongson-minitool
+          retention-days: 7
